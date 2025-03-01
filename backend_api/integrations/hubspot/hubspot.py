@@ -1,4 +1,11 @@
-# hubspot.py
+"""
+Hubspot.py
+
+Integrate Hubspot with own back app in FastAPI
+Use Authorization with token exchange
+Fetch required data from Hubspot
+
+"""
 import asyncio
 import base64
 import hashlib
@@ -18,6 +25,7 @@ from redis_client.redis_client import (
 )
 from starlette.responses import HTMLResponse
 
+from utils.logger import setup_logging, get_logger
 from integrations.integration_item.integration_item import IntegrationItem
 
 # Load the .env file vars
@@ -31,15 +39,21 @@ token_url = os.getenv("TOKEN_URL")
 contacts_url = os.getenv("CONTACTS_URL")
 account_info_url = os.getenv("ACCOUNT_DETAILS_URL")
 
+# set up logging
+setup_logging()
+logger = get_logger(__name__)
+
 
 # Send user request to Authorization page. This forwards request to Oauth server
 # Auth server responds with temporary auth code
 async def authorize_hubspot(user_id, org_id):
     """
-
+    Send user request to Authorization page. This forwards request to Oauth server
+    Auth server responds with temporary auth code
     :param user_id:
     :param org_id:
-    :return:
+    :return: this returns the Auth url in format : #AUTHORIZATION_URL = "https://app-na2.hubspot.com/oauth/
+    authorize?client_id={client_id}&redirect_uri={redirect_uri}&scope=<scope info>"
     """
     state_data = {
         "state": secrets.token_urlsafe(32),
@@ -55,6 +69,7 @@ async def authorize_hubspot(user_id, org_id):
     m.update(code_verifier.encode("utf-8"))
 
     auth_url = f"{authorization_url}&state={encoded_state}"
+    logger.info(f"Authorization started, Auth url being used is : {auth_url} ")
     await asyncio.gather(
         add_key_value_redis(
             f"hubspot_state:{org_id}:{user_id}", json.dumps(state_data), expire=600
@@ -64,15 +79,17 @@ async def authorize_hubspot(user_id, org_id):
         ),
     )
 
+    logger.info(f"added value to redis : hubspot_state &  hubspot_verifier ")
+
     return auth_url
 
 
 # Exchange temporary auth code for token
 async def oauth2callback_hubspot(request: Request):
     """
-
-    :param request:
-    :return:
+    Exchange temporary auth code for token
+    :param request: request url to auth server
+    :return: return the token response after opening small auth window and saves the state to redis
     """
     if request.query_params.get("error"):
         raise HTTPException(
@@ -108,6 +125,11 @@ async def oauth2callback_hubspot(request: Request):
     if original_state != json.loads(saved_state).get("state"):
         raise HTTPException(status_code=400, detail="State does not match.")
 
+    logger.info(
+        f" While making request for token, extracted client_id: {client_id}, redirect_uri: {redirect_uri} "
+        f" code : {code}"
+    )
+
     # Exchange temporary auth code for token
     async with httpx.AsyncClient() as client:
 
@@ -125,7 +147,11 @@ async def oauth2callback_hubspot(request: Request):
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
+        logger.debug(f"Response after callback and after receiving  token: {response}")
+        logger.info(f"successful authorization, token received")
+
     if response.status_code != 200:
+        logger.info(f"failed authorization, token not received")
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
     token_data = response.json()
@@ -134,6 +160,8 @@ async def oauth2callback_hubspot(request: Request):
     await add_key_value_redis(
         f"hubspot_credentials:{org_id}:{user_id}", json.dumps(token_data), expire=600
     )
+
+    logger.debug(f"saved hubspot_credentials to redis")
 
     # Clean up state and verifier
     await asyncio.gather(
@@ -155,12 +183,14 @@ async def oauth2callback_hubspot(request: Request):
 # get hubspot credentials from redis to validate the state
 async def get_hubspot_credentials(user_id, org_id):
     """
-
-    :param user_id:
-    :param org_id:
-    :return:
+    get hubspot credentials from redis to validate the state
+    :param user_id: user id from frontend
+    :param org_id: organization id from frontend
+    :return: it retuns the credentials in json form
     """
     credentials = await get_value_redis(f"hubspot_credentials:{org_id}:{user_id}")
+
+    logger.debug(f"extracted hubspot_credentials from redis")
 
     if not credentials:
         raise HTTPException(status_code=400, detail="No credentials found.")
@@ -172,27 +202,43 @@ async def get_hubspot_credentials(user_id, org_id):
 
     await delete_key_redis(f"hubspot_credentials:{org_id}:{user_id}")
 
+    logger.debug(f"delete hubspot_credentials from redis")
+
+    logger.info(f" received credentials_json from hubspot : {credentials_json}")
+
     return credentials_json
 
 
 def fetch_items(access_token: str, url: str) -> dict:
-    """Fetch data from a given HubSpot API endpoint."""
+    """Fetch data from a given HubSpot API endpoint.
+    :param access_token: access token received after successful authorization
+    :param url: url to call api endpoints of hubspot
+    :return: it return the response received from above url in json form
+    """
     headers = {"Authorization": f"Bearer {access_token}"}
     response = requests.get(url, headers=headers)
+
+    logger.info(f"Fetched data from a given HubSpot API endpoint {url}")
 
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
+    logger.debug(f"Fetched data from a given HubSpot API endpoint as {response.json}")
+
     return response.json()
+
 
 async def create_integration_item_metadata_object(data):
     """Create an IntegrationItem metadata object from combined contact and
     account data.
-    :param data:
-    :return: """
+    :param data: data in list form
+    :return: this create and returns new IntegrationItem object
+    """
     contact_data = data.get("contact", {})
     account_metadata = data.get("account", {})
     properties = contact_data.get("properties", {})
+
+    logger.info("creating metadata object for received data of hubspot")
 
     return IntegrationItem(
         id=contact_data.get("id"),
@@ -209,23 +255,39 @@ async def create_integration_item_metadata_object(data):
 async def get_items_hubspot(credentials):
     """Fetch contacts and account details from HubSpot and return as JSON
     response.
-    :param credentials:
-    :return: """
+    :param credentials: it receives the hubspot credentials from previous api call. (stored in redis)
+    :return: return the final response data in json form , which was fetched from different api endpoints of Hubspot
+    after successful authorization.
+    """
     credentials = json.loads(credentials)
 
     contacts_response = fetch_items(credentials.get("access_token"), contacts_url)
-    contacts_list = contacts_response.get("results", []) if isinstance(contacts_response, dict) else contacts_response
+    contacts_list = (
+        contacts_response.get("results", [])
+        if isinstance(contacts_response, dict)
+        else contacts_response
+    )
 
     account_metadata = fetch_items(credentials.get("access_token"), account_info_url)
-    account_metadata = account_metadata[0] if isinstance(account_metadata,
-                                                         list) and account_metadata else account_metadata
+    account_metadata = (
+        account_metadata[0]
+        if isinstance(account_metadata, list) and account_metadata
+        else account_metadata
+    )
 
-    combined_data = [{"contact": contact, "account": account_metadata} for contact in contacts_list]
+    combined_data = [
+        {"contact": contact, "account": account_metadata} for contact in contacts_list
+    ]
 
-    metadata_objects = [await create_integration_item_metadata_object(data) for data in combined_data]
+    logger.info(
+        f"After successful authorization, fetched data from hubspot api endpoints "
+    )
 
-    response_json = {
-        "items": [obj.__dict__ for obj in metadata_objects]
-    }
+    metadata_objects = [
+        await create_integration_item_metadata_object(data) for data in combined_data
+    ]
 
+    response_json = {"items": [obj.__dict__ for obj in metadata_objects]}
+
+    logger.debug(f"data from hubspot api endpoints:   {response_json}")
     return json.dumps(response_json)
