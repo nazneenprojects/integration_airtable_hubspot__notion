@@ -27,42 +27,6 @@ export const DataForm = ({ integrationType, credentials }) => {
     }
 
     return (
-        // <Box display='flex' justifyContent='center' alignItems='center' flexDirection='column' width='100%'>
-        //     <Box display='flex' flexDirection='column' width='100%'>
-        //         <TextField
-        //             label="Loaded Data"
-        //             value={loadedData || ''}
-        //             sx={{
-        //                 mt: 2,         // margin top
-        //                 width: '500px', // specific width
-        //                 height: '200px' 
-        //             }}
-        //             InputProps={{
-        //                 style: { height: '200px' } 
-        //             }}
-        //             inputProps={{
-        //                 style: { height: '180px' }
-        //             }}
-        //             InputLabelProps={{ shrink: true }}
-        //             disabled
-        //         />
-        //         <Button
-        //             onClick={handleLoad}
-        //             sx={{mt: 2}}
-        //             variant='contained'
-        //         >
-        //             Load Data
-        //         </Button>
-        //         <Button
-        //             onClick={() => setLoadedData(null)}
-        //             sx={{mt: 1}}
-        //             variant='contained'
-        //         >
-        //             Clear Data
-        //         </Button>
-        //     </Box>
-        // </Box>
-
         <Box display='flex' justifyContent='center' alignItems='center' flexDirection='column' width='100%'>
             <Box display='flex' flexDirection='column' width='100%' alignItems='center'>
                 <Paper 
